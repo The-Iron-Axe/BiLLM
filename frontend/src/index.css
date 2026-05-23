@@ -1,0 +1,183 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* light theme (default) */
+:root {
+  --bg-base: 255 255 255;
+  --bg-panel: 249 250 251;
+  --bg-panel-alt: 243 244 246;
+  --bg-hover: 229 231 235;
+  --bg-active: 209 213 219;
+  --border-subtle: 226 228 232;
+  --fg-primary: 17 24 39;
+  --fg-secondary: 55 65 81;
+  --fg-muted: 107 114 128;
+  --input-bg: 255 255 255;
+  --scrollbar-thumb: 209 213 219;
+  --scrollbar-thumb-hover: 156 163 175;
+  color-scheme: light;
+}
+
+html.dark {
+  --bg-base: 11 11 12;
+  --bg-panel: 20 20 22;
+  --bg-panel-alt: 26 26 29;
+  --bg-hover: 35 35 39;
+  --bg-active: 64 64 64;
+  --border-subtle: 42 42 46;
+  --fg-primary: 245 245 245;
+  --fg-secondary: 212 212 216;
+  --fg-muted: 115 115 115;
+  --input-bg: 15 15 17;
+  --scrollbar-thumb: 42 42 46;
+  --scrollbar-thumb-hover: 58 58 63;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  background: rgb(var(--bg-base));
+  color: rgb(var(--fg-primary));
+}
+
+textarea {
+  field-sizing: content;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(var(--scrollbar-thumb));
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--scrollbar-thumb-hover));
+}
+
+.input {
+  width: 100%;
+  background: rgb(var(--input-bg));
+  border: 1px solid rgb(var(--border-subtle));
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: rgb(var(--fg-primary));
+  outline: none;
+}
+.input:focus {
+  border-color: rgb(var(--fg-muted));
+}
+select.input option {
+  background: rgb(var(--bg-panel));
+  color: rgb(var(--fg-primary));
+}
+
+/* Markdown bubble: compact spacing + dark code blocks in both themes */
+.md-body :where(p, ul, ol, blockquote, pre, table):first-child {
+  margin-top: 0;
+}
+.md-body :where(p, ul, ol, blockquote, pre, table):last-child {
+  margin-bottom: 0;
+}
+.md-body p {
+  margin: 0.4em 0;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.md-body li {
+  margin: 0.15em 0;
+}
+.md-body pre {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid rgb(var(--border-subtle));
+  border-radius: 8px;
+  padding: 0.75em 0.9em;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.md-body pre code {
+  background: transparent;
+  padding: 0;
+  border: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.md-body :not(pre) > code {
+  background: rgb(var(--bg-hover));
+  border: 1px solid rgb(var(--border-subtle));
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.md-body table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.95em;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid rgb(var(--border-subtle));
+  padding: 0.35em 0.6em;
+}
+.md-body th {
+  background: rgb(var(--bg-hover));
+}
+.md-body blockquote {
+  border-left: 3px solid rgb(var(--border-subtle));
+  padding-left: 0.8em;
+  margin: 0.6em 0;
+  color: rgb(var(--fg-secondary));
+}
+.md-body a {
+  color: #3b82f6;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-body hr {
+  border: none;
+  border-top: 1px solid rgb(var(--border-subtle));
+  margin: 0.9em 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0.9em 0 0.4em;
+}
+.md-body h1 { font-size: 1.35em; }
+.md-body h2 { font-size: 1.2em; }
+.md-body h3 { font-size: 1.08em; }
+.md-body h4 { font-size: 1em; }
+
+.md-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  margin-left: 1px;
+  background: rgb(var(--fg-muted));
+  vertical-align: -0.15em;
+  animation: md-cursor-blink 1s steps(2, end) infinite;
+}
+@keyframes md-cursor-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
