@@ -62,6 +62,10 @@ export function ChatPane({
     else setInternalInput(v);
   };
   const listRef = useRef<HTMLDivElement | null>(null);
+  const pinnedRef = useRef(true);
+  const [showJumpBtn, setShowJumpBtn] = useState(false);
+
+  const BOTTOM_THRESHOLD = 80;
 
   const setListRef = (el: HTMLDivElement | null) => {
     listRef.current = el;
@@ -73,16 +77,43 @@ export function ChatPane({
     }
   };
 
-  useEffect(() => {
+  const isNearBottom = (el: HTMLDivElement) =>
+    el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD;
+
+  const scrollToBottom = (behavior: ScrollBehavior = "auto") => {
     const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+    pinnedRef.current = true;
+    setShowJumpBtn(false);
+  };
+
+  const handleListScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const pinned = isNearBottom(el);
+    pinnedRef.current = pinned;
+    setShowJumpBtn(!pinned);
+  };
+
+  useEffect(() => {
+    pinnedRef.current = true;
+    setShowJumpBtn(false);
+    requestAnimationFrame(() => scrollToBottom());
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (pinnedRef.current) scrollToBottom();
   }, [messages]);
 
   const submit = () => {
     const value = input.trim();
     if (!value || streaming || !sessionId) return;
     setInput("");
+    pinnedRef.current = true;
+    setShowJumpBtn(false);
     send(value);
+    requestAnimationFrame(() => scrollToBottom());
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -135,10 +166,12 @@ export function ChatPane({
         </div>
       </header>
 
-      <div
-        ref={setListRef}
-        className="flex-1 overflow-y-auto scrollbar-thin px-5 py-6 space-y-4"
-      >
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={setListRef}
+          onScroll={handleListScroll}
+          className="h-full overflow-y-auto scrollbar-thin px-5 py-6 space-y-4"
+        >
         {!sessionId && (
           <div
             data-no-aux="true"
@@ -181,6 +214,20 @@ export function ChatPane({
           <div className="text-sm text-red-500 dark:text-red-400 bg-red-500/10 dark:bg-red-950/30 border border-red-500/30 dark:border-red-900 rounded-md px-3 py-2">
             {error}
           </div>
+        )}
+        </div>
+        {showJumpBtn && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom("smooth")}
+            aria-label="回到底部"
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10
+              px-3 py-1.5 rounded-full text-xs font-medium
+              bg-bg-panel/95 text-fg-secondary border border-border-subtle shadow-md
+              hover:text-fg-primary hover:bg-bg-hover transition"
+          >
+            回到底部
+          </button>
         )}
       </div>
 

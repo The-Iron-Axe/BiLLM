@@ -55,7 +55,10 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
     <ConfirmContext.Provider value={confirm}>
       {children}
       {pending && (
-        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4">
+        <div
+          data-confirm-dialog
+          className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4"
+        >
           <div
             role="dialog"
             aria-modal="true"

@@ -95,6 +95,18 @@ export function SettingsDialog({
     setTestAuxResult(null);
   }, [modelAux]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (document.querySelector("[data-confirm-dialog]")) return;
+      e.preventDefault();
+      onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   const save = async () => {
@@ -172,9 +184,16 @@ export function SettingsDialog({
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-      <div className="bg-bg-panel border border-border-subtle rounded-xl w-full max-w-lg shadow-xl flex flex-col max-h-[90vh]">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        className="bg-bg-panel border border-border-subtle rounded-xl w-full max-w-lg shadow-xl flex flex-col max-h-[90vh]"
+      >
         <div className="px-5 pt-5 pb-3 flex items-center justify-between">
-          <h3 className="text-lg font-medium text-fg-primary">设置</h3>
+          <h3 id="settings-title" className="text-lg font-medium text-fg-primary">
+            设置
+          </h3>
           <button
             onClick={onClose}
             aria-label="关闭"
