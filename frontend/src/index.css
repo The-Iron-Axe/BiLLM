@@ -83,6 +83,42 @@ select.input option {
   color: rgb(var(--fg-primary));
 }
 
+.select {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgb(var(--input-bg));
+  border: 1px solid rgb(var(--border-subtle));
+  border-radius: 10px;
+  padding: 9px 36px 9px 12px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: rgb(var(--fg-primary));
+  outline: none;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.select:hover {
+  border-color: rgb(var(--fg-muted));
+  background: rgb(var(--bg-panel));
+}
+.select:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 0.14);
+}
+.select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.select option {
+  background: rgb(var(--bg-panel));
+  color: rgb(var(--fg-primary));
+  padding: 8px;
+}
+
 /* Markdown bubble: compact spacing + dark code blocks in both themes */
 .md-body :where(p, ul, ol, blockquote, pre, table):first-child {
   margin-top: 0;

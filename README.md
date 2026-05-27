@@ -43,7 +43,7 @@ BiLLM 是一个本地运行的双栏大模型聊天 Web 应用。名称源自 **
 
 - **后端**：基于 **Python + FastAPI** 构建，使用 **SQLite** 进行本地会话与消息的持久化，通过 OpenAI 兼容的 SDK 调用各大模型 API，支持 **SSE（Server-Sent Events）** 流式响应。
 - **前端**：基于 **Vite + React + TypeScript + Tailwind CSS** 构建，采用三栏布局（侧边栏 + 主栏 + 辅栏），开发模式下通过 `/api` 代理解决跨域问题。
-- **配置管理**：支持 `.env` 文件配置默认 API Key、Base URL 以及主/辅模型名称。用户亦可在前端设置页进行个性化配置并写入数据库。系统读取配置的优先级为：`数据库 (DB) > 环境变量 (.env)`。
+- **配置管理**：大模型相关配置（API Key、Base URL、主/辅模型）统一保存在项目根目录的 **`config.json`**。设置页修改会实时写入该文件；也可直接编辑文件。前端每 2 秒轮询配置，界面会自动同步。
 
 ---
 
@@ -70,19 +70,89 @@ BiLLM 是一个本地运行的双栏大模型聊天 Web 应用。名称源自 **
 - **Token 估算**：每栏头部实时显示当前栏的消息条数及估算的 Token 消耗（主/辅栏分开统计）。
 
 ### 6. 系统设置
-- **多服务商支持**：内置常见服务商模板（OpenAI、Gemini、Anthropic、MiniMax、GLM、DeepSeek、Grok、Qwen、Kimi、硅基流动、自定义），选中后自动填充对应的默认 Base URL。
-- **模型管理**：支持主/辅模型一键交换、连通性测试以及重置为 `.env` 默认值。
-- **交互安全**：删除、重置等敏感操作采用自定义的确认对话框，替代浏览器原生的 `confirm` 弹窗。
+
+设置面板采用左侧栏目 + 右侧内容的布局，包含 **外观**、**选区行为**、**模型 / API**、**关于** 四个分类。
+
+**模型 / API（`config.json`）**
+
+| 能力 | 说明 |
+|------|------|
+| 服务商模板 | 内置 OpenAI、Gemini、Anthropic、MiniMax、GLM、DeepSeek、Grok、Qwen、Kimi、硅基流动、自定义等，选中后自动填充 Base URL |
+| 自动保存 | 修改 Base URL、API Key、主/辅模型后约 500ms 自动写入 `config.json`，无需点保存 |
+| 连通性测试 | 可同时测试主、辅两个模型是否可用 |
+| 模型交换 | 一键互换主/辅模型名 |
+| 恢复默认 | 用 `config.example.json` 覆盖当前 `config.json`（需确认） |
+
+**仅保存在浏览器本地的偏好**（不写 `config.json`）：
+
+- 日间 / 夜间主题
+- 布局锁定、选区复制行为等
+
+**交互安全**：删除会话、恢复默认配置等敏感操作使用自定义确认框，而非浏览器原生 `confirm`。
 
 ---
 
 ## 📦 数据与部署
 
 本工具定位为**个人或小团队的本地辅助工具**，并非多用户 SaaS 系统。
-- **本地存储**：所有数据均保存在本地的 `billm.db` 中，不依赖任何云端同步服务。
-- **一键启动**：项目提供了本地启动脚本，方便快速运行。
-  - **Windows**：双击运行 `start.bat`
-  - **macOS / Linux**：在终端运行 `bash start.sh`
+
+**本地文件分工：**
+
+| 文件 | 内容 |
+|------|------|
+| `config.json` | API Key、Base URL、主/辅模型（含敏感信息，已 gitignore） |
+| `config.example.json` | 配置模板，随仓库分发 |
+| `billm.db` | 会话与消息记录 |
+
+不依赖任何云端同步服务。
+
+**一键启动：**
+
+- **Windows**：双击 `start.bat`
+- **macOS / Linux**：`bash start.sh`
+
+启动脚本会在缺少 `config.json` 时从 `config.example.json` 复制一份。
+
+---
+
+## ⚙️ config.json 配置
+
+BiLLM 的大模型相关配置统一保存在项目根目录的 **`config.json`**，前后端读写同一份文件。会话与消息仍在 `billm.db`，API / 模型配置**不写入数据库**。
+
+| 文件 | 是否提交 Git | 用途 |
+|------|--------------|------|
+| `config.example.json` | 是 | 模板，不含真实 Key |
+| `config.json` | 否（已 gitignore） | 实际运行配置 |
+
+首次启动时，若不存在 `config.json`，启动脚本或后端会从 `config.example.json` 复制，或自动创建默认文件。
+
+### 字段说明
+
+```json
+{
+  "api_base_url": "https://api.openai.com/v1",
+  "api_key": "sk-...",
+  "model_main": "gpt-4o",
+  "model_aux": "gpt-4o-mini"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `api_base_url` | OpenAI 兼容 API 地址 |
+| `api_key` | API Key（明文保存在本地） |
+| `model_main` | 主栏模型名 |
+| `model_aux` | 辅栏模型名 |
+
+`config.json` 只存以上四项。前端轮询同步用的版本号由后端根据**文件修改时间**隐式计算，不会写入文件。`config.json` 含 API Key，**请勿提交到 Git**。
+
+### 修改配置的三种方式
+
+1. **设置页（推荐）** — 打开 **设置 → 模型 / API**，修改后约 500ms 自动写入 `config.json`。
+2. **直接编辑文件** — 修改根目录 `config.json`；前端每 2 秒轮询，顶栏模型名会自动刷新；设置页打开且无未保存输入时，表单也会同步。
+3. **恢复默认** — 设置页底部 **「恢复为默认配置」** 会用 `config.example.json` 覆盖 `config.json`（需确认）。
+
+若使用硅基流动等国内服务商，将 `api_base_url` 改为对应地址即可（例如 `https://api.siliconflow.cn/v1`）。
 
 ---
 
@@ -94,16 +164,22 @@ git clone https://github.com/The-Iron-Axe/BiLLM.git
 cd BiLLM
 ```
 
-### 2. 配置文件
-将根目录下的 `.env.example` 复制并重命名为 `.env`，然后填入您的 API Key 和配置：
-```env
-# 示例配置
-OPENAI_API_KEY=your_api_key_here
-OPENAI_BASE_URL=https://api.openai.com/v1
-# 主辅模型默认值
-DEFAULT_MAIN_MODEL=gpt-4o
-DEFAULT_AUX_MODEL=gpt-4o-mini
+### 2. 配置大模型
+
+BiLLM 通过 **`config.json`** 配置 API，不再使用 `.env`。
+
+**方式 A：启动后于网页填写（推荐）**
+
+1. 先运行启动脚本（见下一步），会自动生成 `config.json`
+2. 打开 **设置 → 模型 / API**，填入 API Key 并选择服务商 / 模型
+
+**方式 B：启动前手动编辑**
+
+```bash
+cp config.example.json config.json   # Windows: copy config.example.json config.json
 ```
+
+编辑 `config.json` 中的 `api_base_url`、`api_key`、`model_main`、`model_aux` 即可。字段含义见上文 **config.json 配置**。
 
 ### 3. 本地运行
 - **Windows 用户**：直接双击运行根目录下的 `start.bat`。

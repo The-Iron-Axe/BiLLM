@@ -54,13 +54,3 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     session: Mapped[Session] = relationship("Session", back_populates="messages")
-
-
-class AppSettings(Base):
-    __tablename__ = "app_settings"
-
-    id: Mapped[int] = mapped_column(primary_key=True, default=1)
-    api_base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    api_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    model_main: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    model_aux: Mapped[str | None] = mapped_column(String(100), nullable=True)

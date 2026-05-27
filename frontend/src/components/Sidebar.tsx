@@ -201,7 +201,7 @@ export function Sidebar({
                     }}
                     className="opacity-0 group-hover:opacity-100 grid place-items-center w-6 h-6 rounded text-fg-muted hover:text-fg-primary hover:bg-bg-hover transition"
                     aria-label="重命名会话"
-                    title="重命名（也可双击）"
+                    title="重命名"
                   >
                     <PencilIcon />
                   </button>

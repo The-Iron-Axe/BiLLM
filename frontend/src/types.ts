@@ -22,6 +22,7 @@ export interface AppSettings {
   api_key_set: boolean;
   model_main: string;
   model_aux: string;
+  revision: number;
 }
 
 export interface PaneStats {

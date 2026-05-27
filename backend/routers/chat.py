@@ -88,11 +88,11 @@ async def _event_source(payload: ChatRequest) -> AsyncIterator[bytes]:
             yield _DONE
             return
 
-        cfg = await get_effective_config(db)
+        cfg = await get_effective_config()
         if not cfg.api_key:
             yield _sse(
                 {
-                    "error": "API key not configured. Open Settings and set OPENAI_API_KEY.",
+                    "error": "API key not configured. Open Settings and set your API key in config.json.",
                 }
             )
             yield _DONE

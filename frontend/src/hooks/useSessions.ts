@@ -46,6 +46,12 @@ export function useSessions() {
     setSessions((prev) => prev.map((s) => (s.id === id ? updated : s)));
   }, []);
 
+  const clearAll = useCallback(async () => {
+    await api.deleteAllSessions();
+    setSessions([]);
+    setCurrentId(null);
+  }, []);
+
   return {
     sessions,
     currentId,
@@ -55,5 +61,6 @@ export function useSessions() {
     create,
     remove,
     rename,
+    clearAll,
   };
 }

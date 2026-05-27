@@ -60,6 +60,7 @@ class SettingsOut(BaseModel):
     api_key_set: bool
     model_main: str
     model_aux: str
+    revision: int
 
 
 class SettingsUpdate(BaseModel):

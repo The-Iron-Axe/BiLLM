@@ -1,13 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "../hooks/useChat";
+import {
+  sendShortcutHint,
+  shouldSubmitFromKeyDown,
+  type SendShortcut,
+} from "../prefs";
 import type { Pane } from "../types";
+import { paneQuestionSummary } from "../utils/paneHeader";
 import { MessageBubble } from "./MessageBubble";
 
 interface Props {
   sessionId: string | null;
   pane: Pane;
-  title: string;
-  subtitle: string;
+  /** Shown when this pane has no user messages yet. */
+  fallbackTitle: string;
+  /** Session title from sidebar; main pane only. */
+  sessionTitle?: string | null;
+  onRenameSession?: (title: string) => void;
   modelLabel: string;
   onAfterSend?: () => void;
   onSwap?: () => void;
@@ -20,13 +29,15 @@ interface Props {
   /** Ref to the scrollable message-list area (not the header or input). */
   conversationRef?: React.Ref<HTMLDivElement>;
   textareaRef?: React.Ref<HTMLTextAreaElement>;
+  sendShortcut?: SendShortcut;
 }
 
 export function ChatPane({
   sessionId,
   pane,
-  title,
-  subtitle,
+  fallbackTitle,
+  sessionTitle,
+  onRenameSession,
   modelLabel,
   onAfterSend,
   onSwap,
@@ -38,6 +49,7 @@ export function ChatPane({
   sectionRef,
   conversationRef,
   textareaRef,
+  sendShortcut = "enter",
 }: Props) {
   const {
     messages,
@@ -64,6 +76,7 @@ export function ChatPane({
   const listRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);
   const [showJumpBtn, setShowJumpBtn] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
 
   const BOTTOM_THRESHOLD = 80;
 
@@ -117,29 +130,97 @@ export function ChatPane({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (shouldSubmitFromKeyDown(e, sendShortcut)) {
       e.preventDefault();
       submit();
     }
   };
 
+  const inputPlaceholder = useMemo(() => {
+    if (!sessionId) return "请先选择会话";
+    const hint = sendShortcutHint(sendShortcut);
+    return pane === "main"
+      ? `向主助手提问… ${hint}`
+      : `辅助助手 · 临时问题… ${hint}`;
+  }, [sessionId, pane, sendShortcut]);
+
+  useEffect(() => {
+    setEditingTitle(false);
+  }, [sessionId]);
+
+  const headerTitle = useMemo(
+    () => paneQuestionSummary(messages, fallbackTitle),
+    [messages, fallbackTitle],
+  );
+
+  const displayTitle = useMemo(() => {
+    if (!onRenameSession) return headerTitle;
+    const named = sessionTitle?.trim();
+    if (named && named !== "新对话") return named;
+    return headerTitle;
+  }, [onRenameSession, sessionTitle, headerTitle]);
+
+  const canRename = !!sessionId && !!onRenameSession;
+
   return (
     <section ref={sectionRef} className="flex-1 min-w-0 h-full flex flex-col bg-bg-base">
       <header className="px-5 py-3 border-b border-border-subtle flex items-center gap-3">
-        <h2 className="font-medium text-fg-primary">{title}</h2>
-        <span className="text-xs text-fg-muted">{subtitle}</span>
-        {stats && stats.message_count > 0 && (
-          <span
-            className="text-xs text-fg-muted font-mono"
-            title="本栏当前的消息数与估算上下文 token（每次发送都会把全部历史发给模型）"
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-0.5 min-w-0 max-w-full">
+            {editingTitle && canRename ? (
+              <HeaderTitleInput
+                initial={displayTitle}
+                onSubmit={(next) => {
+                  setEditingTitle(false);
+                  const trimmed = next.trim();
+                  if (trimmed && trimmed !== displayTitle) {
+                    onRenameSession!(trimmed);
+                  }
+                }}
+                onCancel={() => setEditingTitle(false)}
+              />
+            ) : (
+              <>
+                <h2
+                  className="font-medium text-fg-primary truncate min-w-0 text-[15px] leading-6"
+                  title={displayTitle}
+                >
+                  {displayTitle}
+                </h2>
+                {canRename && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingTitle(true)}
+                    aria-label="编辑标题"
+                    title="编辑标题"
+                    className="shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-md text-fg-muted hover:text-fg-primary hover:bg-bg-hover transition"
+                  >
+                    <PencilIcon />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+          <div
+            className="mt-1 flex items-center gap-2 min-w-0 text-xs text-fg-muted font-mono"
+            title="本栏消息数、估算上下文 token 与当前模型"
           >
-            · {stats.message_count} 条 · ~{stats.total_tokens.toLocaleString()} token
-          </span>
-        )}
-        <span className="ml-auto text-xs text-fg-muted font-mono">
-          {modelLabel}
-        </span>
-        <div className="flex items-center gap-1">
+            {stats && stats.message_count > 0 ? (
+              <>
+                <span className="shrink-0">{stats.message_count} 条</span>
+                <span className="shrink-0 text-fg-muted/50">·</span>
+                <span className="shrink-0">
+                  ~{stats.total_tokens.toLocaleString()} token
+                </span>
+                <span className="shrink-0 text-fg-muted/50">·</span>
+              </>
+            ) : null}
+            <span className="truncate" title={modelLabel}>
+              {modelLabel}
+            </span>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           {onSwap && (
             <IconButton onClick={onSwap} title="交换左右位置">
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -236,13 +317,7 @@ export function ChatPane({
           <textarea
             ref={textareaRef}
             className="flex-1 resize-none bg-transparent outline-none text-[15px] leading-relaxed py-1 max-h-48 min-h-[24px] text-fg-primary placeholder:text-fg-muted"
-            placeholder={
-              sessionId
-                ? pane === "main"
-                  ? "向主助手提问… (Enter 发送, Shift+Enter 换行)"
-                  : "辅助助手 · 临时问题…"
-                : "请先选择会话"
-            }
+            placeholder={inputPlaceholder}
             value={input}
             disabled={!sessionId}
             onChange={(e) => setInput(e.target.value)}
@@ -268,6 +343,53 @@ export function ChatPane({
         </div>
       </div>
     </section>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M11.5 2.5l2 2L5 13H3v-2L11.5 2.5z" />
+    </svg>
+  );
+}
+
+function HeaderTitleInput({
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  initial: string;
+  onSubmit: (next: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, []);
+
+  return (
+    <input
+      ref={inputRef}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onSubmit(value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+      onBlur={() => onSubmit(value)}
+      className="flex-1 min-w-0 h-6 font-medium text-[15px] leading-6 text-fg-primary bg-bg-panel border border-border-subtle rounded-md px-2 outline-none focus:border-blue-500"
+    />
   );
 }
 

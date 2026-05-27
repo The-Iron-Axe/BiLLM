@@ -6,13 +6,18 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useSessions } from "./hooks/useSessions";
 import { useTheme } from "./hooks/useTheme";
+import {
+  DEFAULT_SEND_SHORTCUT,
+  loadSendShortcut,
+  type SendShortcut,
+} from "./prefs";
 import type { AppSettings, Pane } from "./types";
 
 type Visible = "both" | "main" | "aux";
 
-const PANE_META: Record<Pane, { title: string; subtitle: string }> = {
-  main: { title: "主助手", subtitle: "复杂问题主线" },
-  aux: { title: "辅助助手", subtitle: "临时/次要问题" },
+const PANE_META: Record<Pane, string> = {
+  main: "主助手",
+  aux: "辅助助手",
 };
 
 const LS_KEY = "billm.layout.v1";
@@ -66,11 +71,13 @@ function loadLayout(): Layout {
 interface Prefs {
   autoCopyToAux: boolean;
   autoCopyClearAux: boolean;
+  sendShortcut: SendShortcut;
 }
 
 const DEFAULT_PREFS: Prefs = {
   autoCopyToAux: false,
   autoCopyClearAux: true,
+  sendShortcut: DEFAULT_SEND_SHORTCUT,
 };
 
 function loadPrefs(): Prefs {
@@ -84,6 +91,7 @@ function loadPrefs(): Prefs {
           typeof p.autoCopyClearAux === "boolean"
             ? p.autoCopyClearAux
             : DEFAULT_PREFS.autoCopyClearAux,
+        sendShortcut: loadSendShortcut(p.sendShortcut),
       };
     }
   } catch {
@@ -100,7 +108,7 @@ interface SelectionInfo {
 }
 
 export default function App() {
-  const { sessions, currentId, setCurrentId, create, remove, rename, refresh } =
+  const { sessions, currentId, setCurrentId, create, remove, rename, clearAll, refresh } =
     useSessions();
   const { theme, setTheme } = useTheme();
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -123,6 +131,7 @@ export default function App() {
   const [autoCopyClearAux, setAutoCopyClearAux] = useState(
     initialPrefs.autoCopyClearAux,
   );
+  const [sendShortcut, setSendShortcut] = useState(initialPrefs.sendShortcut);
 
   const [auxInput, setAuxInput] = useState("");
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
@@ -148,9 +157,9 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(
       PREFS_KEY,
-      JSON.stringify({ autoCopyToAux, autoCopyClearAux }),
+      JSON.stringify({ autoCopyToAux, autoCopyClearAux, sendShortcut }),
     );
-  }, [autoCopyToAux, autoCopyClearAux]);
+  }, [autoCopyToAux, autoCopyClearAux, sendShortcut]);
 
   const loadSettings = useCallback(() => {
     api
@@ -162,6 +171,20 @@ export default function App() {
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      api
+        .getSettings()
+        .then((next) => {
+          setSettings((prev) =>
+            !prev || prev.revision !== next.revision ? next : prev,
+          );
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const session = sessions.find((s) => s.id === currentId);
@@ -293,13 +316,19 @@ export default function App() {
 
   const renderPane = (p: Pane) => {
     const both = visible === "both";
+    const currentSession = sessions.find((s) => s.id === currentId);
     return (
       <ChatPane
         key={p}
         sessionId={currentId}
         pane={p}
-        title={PANE_META[p].title}
-        subtitle={PANE_META[p].subtitle}
+        fallbackTitle={PANE_META[p]}
+        sessionTitle={p === "main" ? currentSession?.title : undefined}
+        onRenameSession={
+          p === "main" && currentId
+            ? (title) => handleRename(currentId, title)
+            : undefined
+        }
         modelLabel={
           (p === "main" ? settings?.model_main : settings?.model_aux) ?? "—"
         }
@@ -307,11 +336,12 @@ export default function App() {
         onSwap={both ? swap : undefined}
         onClose={both ? () => closePane(p) : undefined}
         onShowOther={!both ? showBoth : undefined}
-        otherLabel={PANE_META[p === "main" ? "aux" : "main"].title}
+        otherLabel={PANE_META[p === "main" ? "aux" : "main"]}
         conversationRef={p === "main" ? mainConversationElRef : undefined}
         textareaRef={p === "aux" ? auxTextareaRef : undefined}
         inputValue={p === "aux" ? auxInput : undefined}
         onInputChange={p === "aux" ? setAuxInput : undefined}
+        sendShortcut={sendShortcut}
       />
     );
   };
@@ -436,10 +466,10 @@ export default function App() {
 
       <SettingsDialog
         open={settingsOpen}
-        onClose={() => {
-          setSettingsOpen(false);
-          loadSettings();
-        }}
+        onClose={() => setSettingsOpen(false)}
+        onSettingsSaved={loadSettings}
+        onClearAllSessions={clearAll}
+        externalRevision={settings?.revision}
         theme={theme}
         onChangeTheme={setTheme}
         autoCopyToAux={autoCopyToAux}
@@ -448,6 +478,8 @@ export default function App() {
         onChangeAutoCopyClearAux={setAutoCopyClearAux}
         layoutLocked={layoutLocked}
         onChangeLayoutLocked={setLayoutLocked}
+        sendShortcut={sendShortcut}
+        onChangeSendShortcut={setSendShortcut}
       />
     </div>
   );

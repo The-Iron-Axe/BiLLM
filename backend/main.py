@@ -7,10 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
 from .routers import chat, sessions, settings
+from .services.config_store import ensure_config_file
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await ensure_config_file()
     await init_db()
     yield
 

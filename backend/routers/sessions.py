@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
@@ -44,6 +44,14 @@ def _model_for_pane(pane: Pane, cfg) -> str:  # noqa: ANN001
 async def list_sessions(db: AsyncSession = Depends(get_db)) -> list[Session]:
     result = await db.execute(select(Session).order_by(Session.updated_at.desc()))
     return list(result.scalars().all())
+
+
+@router.delete("", status_code=204, response_class=Response)
+async def delete_all_sessions(db: AsyncSession = Depends(get_db)) -> Response:
+    """Delete every session and all messages (messages cascade via FK)."""
+    await db.execute(delete(Session))
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.post("", response_model=SessionOut)
@@ -96,7 +104,7 @@ async def list_messages(
         .order_by(Message.created_at.asc())
     )
     msgs = list(result.scalars().all())
-    cfg = await get_effective_config(db)
+    cfg = await get_effective_config()
     contents = [m.content for m in msgs]
     stats = PaneStats(
         message_count=len(msgs),
@@ -117,7 +125,7 @@ async def session_pane_stats(
     session = await db.get(Session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    cfg = await get_effective_config(db)
+    cfg = await get_effective_config()
     return await _pane_stats(db, session_id, pane, _model_for_pane(pane, cfg))
 
 

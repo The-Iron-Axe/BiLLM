@@ -34,16 +34,16 @@ for /f "delims=" %%i in ('where node 2^>nul') do set "NODE_PATH=%%i" & goto :nod
 call :ok "Node   : !NODE_PATH!"
 call :ok "npm    : !NPM!"
 
-call :step "Checking .env"
-if not exist ".env" (
-  if exist ".env.example" (
-    copy /y ".env.example" ".env" >nul
-    call :warn ".env missing - copied from .env.example. Edit it to set OPENAI_API_KEY (or fill it later in Settings)."
+call :step "Checking config.json"
+if not exist "config.json" (
+  if exist "config.example.json" (
+    copy /y "config.example.json" "config.json" >nul
+    call :warn "config.json missing - copied from config.example.json. Edit it to set api_key (or fill it later in Settings)."
   ) else (
-    call :warn "Neither .env nor .env.example exists; using defaults. Set the API key in Settings after launch."
+    call :warn "Neither config.json nor config.example.json exists; defaults will be created on first launch."
   )
 ) else (
-  call :ok ".env present"
+  call :ok "config.json present"
 )
 
 if not defined SKIP_INSTALL (

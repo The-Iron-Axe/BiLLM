@@ -27,16 +27,16 @@ c_ok "python3: $(command -v python3)"
 c_ok "node:    $(command -v node)"
 c_ok "npm:     $(command -v npm)"
 
-c_step "检查 .env 配置"
-if [ ! -f .env ]; then
-  if [ -f .env.example ]; then
-    cp .env.example .env
-    c_warn ".env 不存在，已从 .env.example 复制。请按需编辑或在网页设置里填 API Key。"
+c_step "检查 config.json"
+if [ ! -f config.json ]; then
+  if [ -f config.example.json ]; then
+    cp config.example.json config.json
+    c_warn "config.json 不存在，已从 config.example.json 复制。请按需编辑或在网页设置里填 API Key。"
   else
-    c_warn ".env 与 .env.example 均不存在，将使用默认配置。"
+    c_warn "config.json 与 config.example.json 均不存在，首次启动时会自动生成默认配置。"
   fi
 else
-  c_ok ".env 已存在"
+  c_ok "config.json 已存在"
 fi
 
 if [ -z "$SKIP_INSTALL" ]; then

@@ -8,6 +8,10 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@docs/*": ["../docs/*"]
+    },
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",

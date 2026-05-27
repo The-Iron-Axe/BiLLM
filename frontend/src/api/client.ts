@@ -33,6 +33,8 @@ export const api = {
     }),
   deleteSession: (id: string) =>
     jsonFetch<void>(`/api/sessions/${id}`, { method: "DELETE" }),
+  deleteAllSessions: () =>
+    jsonFetch<void>("/api/sessions", { method: "DELETE" }),
   listMessages: (sessionId: string, pane: Pane) =>
     jsonFetch<MessageListResponse>(
       `/api/sessions/${sessionId}/messages?pane=${pane}`,
