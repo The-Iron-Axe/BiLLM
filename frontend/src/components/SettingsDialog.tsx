@@ -9,7 +9,8 @@ import {
 } from "../constants/providers";
 import type { ThemePreference } from "../hooks/useTheme";
 import type { SendShortcut } from "../prefs";
-import type { AppSettings } from "../types";
+import type { AppSettings, ConversationBackup, UsageStats } from "../types";
+import { createQueuedSave } from "../utils/queuedSave";
 import { useConfirm } from "./ConfirmDialog";
 
 interface Props {
@@ -17,6 +18,8 @@ interface Props {
   onClose: () => void;
   onSettingsSaved?: () => void;
   onClearAllSessions?: () => Promise<void>;
+  onSessionsChanged?: () => Promise<void>;
+  currentSessionId?: string | null;
   externalRevision?: number;
   theme: ThemePreference;
   onChangeTheme: (t: ThemePreference) => void;
@@ -35,6 +38,47 @@ type TabId = "appearance" | "behavior" | "data" | "api" | "about";
 interface TestResult {
   ok: boolean;
   detail: string;
+}
+
+interface SettingsDraft {
+  baseUrl: string;
+  apiKey: string;
+  clearApiKey: boolean;
+  modelMain: string;
+  modelAux: string;
+  systemPromptMain: string;
+  systemPromptAux: string;
+  maxOutputMain: string;
+  maxOutputAux: string;
+}
+
+const EMPTY_DRAFT: SettingsDraft = {
+  baseUrl: "", apiKey: "", clearApiKey: false,
+  modelMain: "", modelAux: "", systemPromptMain: "", systemPromptAux: "",
+  maxOutputMain: "", maxOutputAux: "",
+};
+
+function draftFromSettings(settings: AppSettings): SettingsDraft {
+  return {
+    baseUrl: settings.api_base_url,
+    apiKey: "",
+    clearApiKey: false,
+    modelMain: settings.model_main,
+    modelAux: settings.model_aux,
+    systemPromptMain: settings.system_prompt_main,
+    systemPromptAux: settings.system_prompt_aux,
+    maxOutputMain: settings.max_output_tokens_main?.toString() ?? "",
+    maxOutputAux: settings.max_output_tokens_aux?.toString() ?? "",
+  };
+}
+
+function parseOutputLimit(value: string, pane: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(Number(trimmed)) || Number(trimmed) < 1) {
+    throw new Error(`${pane}最大输出 Token 必须为正整数，或留空使用服务商默认值。`);
+  }
+  return Number(trimmed);
 }
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
@@ -96,6 +140,8 @@ export function SettingsDialog({
   onClose,
   onSettingsSaved,
   onClearAllSessions,
+  onSessionsChanged,
+  currentSessionId,
   externalRevision,
   theme,
   onChangeTheme,
@@ -111,106 +157,180 @@ export function SettingsDialog({
   const [tab, setTab] = useState<TabId>("appearance");
   const [current, setCurrent] = useState<AppSettings | null>(null);
   const [providerId, setProviderId] = useState<ProviderId>("custom");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [modelMain, setModelMain] = useState("");
-  const [modelAux, setModelAux] = useState("");
+  const [draft, setDraft] = useState<SettingsDraft>(EMPTY_DRAFT);
+  const {
+    baseUrl, apiKey, clearApiKey, modelMain, modelAux,
+    systemPromptMain, systemPromptAux, maxOutputMain, maxOutputAux,
+  } = draft;
   const [saving, setSaving] = useState(false);
+  const [pendingSave, setPendingSave] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [usage, setUsage] = useState<UsageStats | null>(null);
+  const [dataNotice, setDataNotice] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testMainResult, setTestMainResult] = useState<TestResult | null>(null);
   const [testAuxResult, setTestAuxResult] = useState<TestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const confirm = useConfirm();
   const hydratedRef = useRef(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(true);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const draftRef = useRef(draft);
+  const fetchVersionRef = useRef(0);
+  const resettingRef = useRef(false);
+  const closingRef = useRef(false);
+  const savedHandlerRef = useRef<(next: AppSettings, isCurrent: boolean) => void>(() => undefined);
+  const queueRef = useRef<ReturnType<typeof createQueuedSave<SettingsDraft, AppSettings>> | null>(null);
+  if (!queueRef.current) {
+    queueRef.current = createQueuedSave<SettingsDraft, AppSettings>({
+      save: (value) => {
+        const maxMain = parseOutputLimit(value.maxOutputMain, "主栏");
+        const maxAux = parseOutputLimit(value.maxOutputAux, "辅助栏");
+        if (!value.baseUrl.trim() || !value.modelMain.trim() || !value.modelAux.trim()) {
+          throw new Error("请填写 API 地址以及主栏、辅助栏模型名。");
+        }
+        return api.updateSettings({
+          api_base_url: value.baseUrl,
+          api_key: value.clearApiKey ? "" : value.apiKey || undefined,
+          model_main: value.modelMain,
+          model_aux: value.modelAux,
+          system_prompt_main: value.systemPromptMain,
+          system_prompt_aux: value.systemPromptAux,
+          max_output_tokens_main: maxMain,
+          max_output_tokens_aux: maxAux,
+        });
+      },
+      onSaved: (next, isCurrent) => savedHandlerRef.current(next, isCurrent),
+      onState: (state) => {
+        if (!mountedRef.current) return;
+        setSaving(state.saving);
+        setPendingSave(state.pending);
+        setSaveError(state.error ? String(state.error) : null);
+      },
+    });
+  }
+  const saveQueue = queueRef.current;
+
+  function hydrate(next: AppSettings) {
+    const nextDraft = draftFromSettings(next);
+    draftRef.current = nextDraft;
+    setCurrent(next);
+    setDraft(nextDraft);
+    setProviderId(matchProvider(next.api_base_url));
+    hydratedRef.current = true;
+  }
+
+  savedHandlerRef.current = (next, isCurrent) => {
+    if (!mountedRef.current || resettingRef.current) return;
+    setCurrent(next);
+    // Earlier responses must not erase a newer draft, particularly an API Key.
+    if (isCurrent) hydrate(next);
+    onSettingsSaved?.();
+  };
+
+  function updateDraft(patch: Partial<SettingsDraft>) {
+    if (!hydratedRef.current || resettingRef.current || closingRef.current) return;
+    const next = { ...draftRef.current, ...patch };
+    draftRef.current = next;
+    setDraft(next);
+    fetchVersionRef.current++;
+    saveQueue.enqueue(next);
+  }
+
+  async function requestClose() {
+    if (resettingRef.current || closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    try {
+      await saveQueue.flush();
+      onClose();
+    } catch {
+      // Keep the dialog and the unsaved draft visible; the queue supplies the error.
+    } finally {
+      closingRef.current = false;
+      if (mountedRef.current) setClosing(false);
+    }
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      saveQueue.discard();
+    };
+  }, [saveQueue]);
 
   const apiDirty =
     !!current &&
     (baseUrl !== current.api_base_url ||
       modelMain !== current.model_main ||
       modelAux !== current.model_aux ||
-      apiKey.length > 0);
+      systemPromptMain !== current.system_prompt_main ||
+      systemPromptAux !== current.system_prompt_aux ||
+      maxOutputMain !== (current.max_output_tokens_main?.toString() ?? "") ||
+      maxOutputAux !== (current.max_output_tokens_aux?.toString() ?? "") ||
+      apiKey.length > 0 ||
+      clearApiKey);
 
   useEffect(() => {
     if (!open) {
       hydratedRef.current = false;
       return;
     }
+    const fetchVersion = ++fetchVersionRef.current;
     setError(null);
+    setSaveError(null);
     setTestMainResult(null);
     setTestAuxResult(null);
     api
       .getSettings()
       .then((s) => {
-        setCurrent(s);
-        setBaseUrl(s.api_base_url);
-        setProviderId(matchProvider(s.api_base_url));
-        setModelMain(s.model_main);
-        setModelAux(s.model_aux);
-        setApiKey("");
-        hydratedRef.current = true;
+        if (openRef.current && fetchVersion === fetchVersionRef.current) hydrate(s);
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => {
+        if (openRef.current && fetchVersion === fetchVersionRef.current) setError(String(e));
+      });
+    return () => { fetchVersionRef.current++; };
   }, [open]);
 
   useEffect(() => {
-    if (!open || !hydratedRef.current || !apiDirty) return;
-
-    const timer = window.setTimeout(async () => {
-      setSaving(true);
-      setError(null);
-      try {
-        const next = await api.updateSettings({
-          api_base_url: baseUrl,
-          api_key: apiKey || undefined,
-          model_main: modelMain,
-          model_aux: modelAux,
-        });
-        setCurrent(next);
-        setApiKey("");
-        onSettingsSaved?.();
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setSaving(false);
-      }
-    }, 500);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    open,
-    apiDirty,
-    baseUrl,
-    apiKey,
-    modelMain,
-    modelAux,
-    onSettingsSaved,
-  ]);
+    if (!open || tab !== "data") return;
+    api
+      .getUsage()
+      .then(setUsage)
+      .catch((e) => setError(String(e)));
+  }, [open, tab]);
 
   useEffect(() => {
-    if (!open || !hydratedRef.current || apiDirty) return;
+    if (!open || !hydratedRef.current || apiDirty || pendingSave || saving || resetting) return;
     if (externalRevision === undefined || !current) return;
     if (externalRevision === current.revision) return;
-
+    const fetchVersion = ++fetchVersionRef.current;
+    const queueRevision = saveQueue.revision;
     api
       .getSettings()
       .then((s) => {
-        setCurrent(s);
-        setBaseUrl(s.api_base_url);
-        setProviderId(matchProvider(s.api_base_url));
-        setModelMain(s.model_main);
-        setModelAux(s.model_aux);
-        setApiKey("");
+        if (openRef.current && fetchVersion === fetchVersionRef.current &&
+            queueRevision === saveQueue.revision && !saveQueue.pending && !saveQueue.saving) hydrate(s);
       })
-      .catch((e) => setError(String(e)));
-  }, [open, externalRevision, apiDirty, current?.revision]);
+      .catch((e) => {
+        if (openRef.current && fetchVersion === fetchVersionRef.current) setError(String(e));
+      });
+    return () => { fetchVersionRef.current++; };
+  }, [open, externalRevision, apiDirty, current?.revision, pendingSave, saving, resetting, saveQueue]);
 
   useEffect(() => {
     // Shared fields invalidate both results.
     setTestMainResult(null);
     setTestAuxResult(null);
-  }, [baseUrl, apiKey]);
+  }, [baseUrl, apiKey, clearApiKey]);
 
   useEffect(() => {
     setTestMainResult(null);
@@ -226,11 +346,11 @@ export function SettingsDialog({
       if (e.key !== "Escape") return;
       if (document.querySelector("[data-confirm-dialog]")) return;
       e.preventDefault();
-      onClose();
+      void requestClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  });
 
   if (!open) return null;
 
@@ -240,7 +360,7 @@ export function SettingsDialog({
     setTestAuxResult(null);
     const shared = {
       api_base_url: baseUrl || undefined,
-      api_key: apiKey || undefined,
+      api_key: clearApiKey ? "" : apiKey || undefined,
     };
     const runOne = async (model: string): Promise<TestResult> => {
       if (!model) return { ok: false, detail: "未填写模型名" };
@@ -263,6 +383,7 @@ export function SettingsDialog({
   };
 
   const resetToExample = async () => {
+    if (resettingRef.current || closingRef.current) return;
     const ok = await confirm({
       title: "恢复为默认配置？",
       message:
@@ -271,21 +392,58 @@ export function SettingsDialog({
       danger: true,
     });
     if (!ok) return;
+    resettingRef.current = true;
+    fetchVersionRef.current++;
     setResetting(true);
     setError(null);
+    // The reset is serialized after any active save; discarded drafts cannot replay later.
+    saveQueue.discard();
     try {
+      await saveQueue.settle();
+      saveQueue.discard();
       const next = await api.resetSettings();
-      setCurrent(next);
-      setBaseUrl(next.api_base_url);
-      setProviderId(matchProvider(next.api_base_url));
-      setModelMain(next.model_main);
-      setModelAux(next.model_aux);
-      setApiKey("");
+      hydrate(next);
       onSettingsSaved?.();
     } catch (e) {
       setError(String(e));
+      saveQueue.enqueue(draftRef.current, false);
     } finally {
+      resettingRef.current = false;
       setResetting(false);
+    }
+  };
+
+  const exportAll = async () => {
+    setExporting(true);
+    setError(null);
+    try {
+      await api.exportBackup();
+      setDataNotice("已导出全部会话（不含 API Key）。");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const importBackup = async (file: File | undefined) => {
+    if (!file) return;
+    setImporting(true);
+    setError(null);
+    setDataNotice(null);
+    try {
+      const parsed = JSON.parse(await file.text()) as ConversationBackup;
+      const result = await api.importBackup(parsed);
+      await onSessionsChanged?.();
+      setUsage(await api.getUsage());
+      setDataNotice(
+        `已导入 ${result.imported_sessions} 个会话、${result.imported_messages} 条消息。`,
+      );
+    } catch (e) {
+      setError(`导入失败：${String(e)}`);
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
     }
   };
 
@@ -313,7 +471,12 @@ export function SettingsDialog({
   const activeTab = TABS.find((t) => t.id === tab)!;
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+    <div
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) void requestClose();
+      }}
+    >
       <div
         role="dialog"
         aria-modal="true"
@@ -327,7 +490,8 @@ export function SettingsDialog({
             className="w-44 shrink-0 flex flex-col border-r border-border-subtle py-3 px-2"
           >
             <button
-              onClick={onClose}
+              onClick={() => void requestClose()}
+              disabled={resetting || closing}
               aria-label="关闭"
               className="self-start mb-3 ml-2 p-1.5 rounded-md text-fg-muted hover:text-fg-primary hover:bg-bg-hover transition"
             >
@@ -365,8 +529,16 @@ export function SettingsDialog({
               <h3 id="settings-title" className="text-lg font-medium text-fg-primary">
                 {activeTab.label}
               </h3>
-              {saving && (
-                <span className="text-xs text-fg-muted">保存中…</span>
+              <span className="text-xs text-fg-muted" role="status" aria-live="polite">
+                {closing ? "保存后关闭…" : saving ? "保存中…" : pendingSave ? "有未保存修改" : current ? "已保存" : ""}
+              </span>
+              {(saveError || (pendingSave && error)) && !saving && (
+                <button
+                  type="button"
+                  onClick={() => void saveQueue.flush().catch(() => undefined)}
+                  disabled={resetting || closing}
+                  className="ml-auto text-xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50"
+                >重试保存</button>
               )}
             </div>
 
@@ -445,6 +617,73 @@ export function SettingsDialog({
           {tab === "data" && (
             <div className="space-y-4">
               <Field
+                label="现存消息 Token 估算"
+                hint="仅统计当前保留的会话内容；不是累计 API 消耗或服务商账单。"
+              >
+                {usage ? (
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <DataMetric label="会话" value={usage.session_count} />
+                    <DataMetric label="消息" value={usage.message_count} />
+                    <DataMetric
+                      label="主栏 Token"
+                      value={`~${usage.main_tokens.toLocaleString()}`}
+                    />
+                    <DataMetric
+                      label="辅栏 Token"
+                      value={`~${usage.aux_tokens.toLocaleString()}`}
+                    />
+                  </div>
+                ) : (
+                  <span className="text-sm text-fg-muted">读取中…</span>
+                )}
+              </Field>
+
+              <Field
+                label="导出与导入"
+                hint="导出仅包含会话和消息，不包含 API Key 或模型设置。导入内容会作为新会话保留。"
+              >
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={exportAll}
+                    disabled={exporting}
+                    className="px-4 py-2 rounded-md text-sm bg-bg-panelAlt text-fg-primary hover:bg-bg-hover disabled:opacity-50 transition"
+                  >
+                    {exporting ? "导出中…" : "导出全部会话"}
+                  </button>
+                  {currentSessionId && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        api
+                          .exportSessionMarkdown(currentSessionId)
+                          .catch((e) => setError(String(e)))
+                      }
+                      className="px-4 py-2 rounded-md text-sm bg-bg-panelAlt text-fg-primary hover:bg-bg-hover transition"
+                    >
+                      导出当前会话 Markdown
+                    </button>
+                  )}
+                  <input
+                    ref={importInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={(e) => void importBackup(e.target.files?.[0])}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => importInputRef.current?.click()}
+                    disabled={importing}
+                    className="px-4 py-2 rounded-md text-sm bg-bg-panelAlt text-fg-primary hover:bg-bg-hover disabled:opacity-50 transition"
+                  >
+                    {importing ? "导入中…" : "导入备份"}
+                  </button>
+                </div>
+              </Field>
+              {dataNotice && <p className="text-sm text-emerald-600 dark:text-emerald-400">{dataNotice}</p>}
+
+              <Field
                 label="聊天记录"
                 hint="清空所有会话及聊天记录；模型、API Key 等设置不受影响。"
               >
@@ -461,7 +700,7 @@ export function SettingsDialog({
           )}
 
           {tab === "api" && (
-            <>
+            <fieldset disabled={!hydratedRef.current || resetting || closing} className="min-w-0 space-y-4 disabled:opacity-60">
               <Field label="服务商">
                 <Dropdown
                   value={providerId}
@@ -473,7 +712,7 @@ export function SettingsDialog({
                     const nextId = id as ProviderId;
                     setProviderId(nextId);
                     const preset = getProviderBaseUrl(nextId);
-                    if (preset) setBaseUrl(preset);
+                    if (preset) updateDraft({ baseUrl: preset });
                   }}
                 />
               </Field>
@@ -490,7 +729,7 @@ export function SettingsDialog({
                   value={baseUrl}
                   onChange={(e) => {
                     const v = e.target.value;
-                    setBaseUrl(v);
+                    updateDraft({ baseUrl: v });
                     setProviderId(matchProvider(v));
                   }}
                   placeholder="https://api.openai.com/v1"
@@ -510,16 +749,35 @@ export function SettingsDialog({
                   <input
                     type="password"
                     value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
+                    onChange={(e) => {
+                      updateDraft({ apiKey: e.target.value, clearApiKey: false });
+                    }}
                     placeholder={
-                      current?.api_key_set ? "••••••••" : "sk-..."
+                      clearApiKey
+                        ? "将在保存后清除"
+                        : current?.api_key_set
+                          ? "••••••••"
+                          : "sk-..."
                     }
+                    disabled={clearApiKey}
                     className="input flex-1"
                   />
+                  {current?.api_key_set && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateDraft({ clearApiKey: !clearApiKey, apiKey: "" });
+                      }}
+                      disabled={saving && clearApiKey}
+                      className="shrink-0 px-3 rounded-md text-sm bg-bg-panelAlt text-fg-primary hover:bg-bg-hover transition"
+                    >
+                      {clearApiKey ? "取消清除" : "清除 Key"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={testConnection}
-                    disabled={testing}
+                    disabled={testing || clearApiKey}
                     className="shrink-0 px-3 rounded-md text-sm bg-bg-panelAlt text-fg-primary hover:bg-bg-hover disabled:opacity-50 transition"
                   >
                     {testing ? "测试中…" : "测试连通"}
@@ -539,7 +797,7 @@ export function SettingsDialog({
                 >
                   <input
                     value={modelMain}
-                    onChange={(e) => setModelMain(e.target.value)}
+                    onChange={(e) => updateDraft({ modelMain: e.target.value })}
                     placeholder="gpt-4o"
                     className="input"
                   />
@@ -547,8 +805,7 @@ export function SettingsDialog({
                 <button
                   type="button"
                   onClick={() => {
-                    setModelMain(modelAux);
-                    setModelAux(modelMain);
+                    updateDraft({ modelMain: modelAux, modelAux: modelMain });
                   }}
                   title="交换主/辅 LLM 模型"
                   aria-label="交换主/辅 LLM 模型"
@@ -567,9 +824,55 @@ export function SettingsDialog({
                 >
                   <input
                     value={modelAux}
-                    onChange={(e) => setModelAux(e.target.value)}
+                    onChange={(e) => updateDraft({ modelAux: e.target.value })}
                     placeholder="gpt-4o-mini"
                     className="input"
+                  />
+                </Field>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="主栏最大输出 Token" hint="留空使用服务商默认值。">
+                  <input
+                    type="number" min="1" step="1" inputMode="numeric"
+                    value={maxOutputMain}
+                    onChange={(e) => updateDraft({ maxOutputMain: e.target.value })}
+                    placeholder="服务商默认"
+                    className="input"
+                  />
+                </Field>
+                <Field label="辅助栏最大输出 Token" hint="留空使用服务商默认值。">
+                  <input
+                    type="number" min="1" step="1" inputMode="numeric"
+                    value={maxOutputAux}
+                    onChange={(e) => updateDraft({ maxOutputAux: e.target.value })}
+                    placeholder="服务商默认"
+                    className="input"
+                  />
+                </Field>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 pt-2">
+                <Field
+                  label="主栏系统提示词"
+                  hint="定义主助手的职责、语气与输出方式；会应用到之后的新请求。"
+                >
+                  <textarea
+                    value={systemPromptMain}
+                    onChange={(e) => updateDraft({ systemPromptMain: e.target.value })}
+                    rows={4}
+                    className="input resize-y leading-relaxed"
+                  />
+                </Field>
+                <Field
+                  label="辅助栏系统提示词"
+                  hint="适合设置为核查、解释、反驳或快速检索等辅助角色。"
+                >
+                  <textarea
+                    value={systemPromptAux}
+                    onChange={(e) => updateDraft({ systemPromptAux: e.target.value })}
+                    rows={4}
+                    className="input resize-y leading-relaxed"
                   />
                 </Field>
               </div>
@@ -584,20 +887,29 @@ export function SettingsDialog({
                   {resetting ? "恢复中…" : "恢复为默认配置"}
                 </button>
               </div>
-            </>
+            </fieldset>
           )}
 
           {tab === "about" && <AboutPanel />}
 
-          {error && (
+          {(error || saveError) && (
             <div className="text-sm text-red-500 dark:text-red-400 bg-red-500/10 dark:bg-red-950/30 border border-red-500/30 dark:border-red-900 rounded-md px-3 py-2">
-              {error}
+              {saveError ?? error}
             </div>
           )}
             </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DataMetric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-md border border-border-subtle bg-bg-panelAlt px-3 py-2">
+      <div className="text-xs text-fg-muted">{label}</div>
+      <div className="mt-0.5 font-mono text-fg-primary">{value}</div>
     </div>
   );
 }

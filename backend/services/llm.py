@@ -6,19 +6,6 @@ from openai import AsyncOpenAI
 
 from .config_store import EffectiveConfig
 
-SYSTEM_PROMPTS = {
-    "main": (
-        "You are the primary assistant. The user uses this pane for their main, "
-        "complex problem. Be thorough, structured, and detailed."
-    ),
-    "aux": (
-        "You are an auxiliary assistant in a side pane. The user asks shorter, "
-        "off-topic or quick lookup questions here to avoid polluting the main "
-        "conversation. Be concise and focused."
-    ),
-}
-
-
 def _client(cfg: EffectiveConfig) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=cfg.api_key or "sk-none", base_url=cfg.api_base_url)
 
@@ -27,6 +14,9 @@ async def stream_chat(
     cfg: EffectiveConfig,
     pane: str,
     history: list[dict[str, str]],
+    *,
+    messages_are_complete: bool = False,
+    max_output_tokens: int | None = None,
 ) -> AsyncIterator[str]:
     """Stream assistant text deltas for one chat turn.
 
@@ -37,18 +27,21 @@ async def stream_chat(
     burning tokens after the user pressed "stop".
     """
     model = cfg.model_main if pane == "main" else cfg.model_aux
-    system = SYSTEM_PROMPTS.get(pane, SYSTEM_PROMPTS["main"])
+    system = cfg.system_prompt_main if pane == "main" else cfg.system_prompt_aux
 
-    messages = [{"role": "system", "content": system}, *history]
+    messages = history if messages_are_complete else [{"role": "system", "content": system}, *history]
 
     client = _client(cfg)
-    stream = await client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-    )
+    stream = None
 
     try:
+        output_options = {"max_tokens": max_output_tokens} if max_output_tokens is not None else {}
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=True,
+            **output_options,
+        )
         async for chunk in stream:
             if not chunk.choices:
                 continue
@@ -64,5 +57,9 @@ async def stream_chat(
                 result = close()
                 if hasattr(result, "__await__"):
                     await result
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await client.close()
         except Exception:  # noqa: BLE001
             pass

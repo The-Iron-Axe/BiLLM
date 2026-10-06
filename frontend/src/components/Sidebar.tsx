@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Session } from "../types";
+import { api } from "../api/client";
+import type { SearchResult, Session } from "../types";
 import { useConfirm } from "./ConfirmDialog";
 
 interface Props {
@@ -9,6 +10,7 @@ interface Props {
   onCreate: () => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onOpenSearchResult: (result: SearchResult) => void;
   onOpenSettings: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -29,6 +31,7 @@ export function Sidebar({
   onCreate,
   onDelete,
   onRename,
+  onOpenSearchResult,
   onOpenSettings,
   collapsed,
   onToggleCollapsed,
@@ -40,6 +43,8 @@ export function Sidebar({
   const sidebarRef = useRef<HTMLElement>(null);
   const [dragging, setDragging] = useState(false);
   const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const confirm = useConfirm();
 
@@ -50,6 +55,33 @@ export function Sidebar({
       (s.title || "新对话").toLowerCase().includes(q),
     );
   }, [sessions, query]);
+
+  useEffect(() => {
+    const term = query.trim();
+    if (!term) {
+      setSearchResults(null);
+      setSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      api
+        .search(term)
+        .then(({ results }) => {
+          if (!cancelled) {
+            setSearchResults(results);
+            setSearchError(null);
+          }
+        })
+        .catch((e) => {
+          if (!cancelled) setSearchError(String(e));
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
 
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
     if (locked) return;
@@ -146,17 +178,23 @@ export function Sidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto scrollbar-thin px-2 space-y-0.5">
-        {sessions.length === 0 && (
+        {!query && sessions.length === 0 && (
           <div className="px-3 py-6 text-sm text-fg-muted">
             还没有会话，点上面新建一个吧。
           </div>
         )}
-        {sessions.length > 0 && filtered.length === 0 && (
+        {query && searchResults === null && !searchError && (
+          <div className="px-3 py-6 text-sm text-fg-muted">搜索中…</div>
+        )}
+        {query && searchError && (
+          <div className="px-3 py-6 text-sm text-red-500">搜索失败，请稍后重试。</div>
+        )}
+        {query && searchResults?.length === 0 && (
           <div className="px-3 py-6 text-sm text-fg-muted">
-            没有匹配「{query}」的会话
+            没有匹配「{query}」的会话或消息
           </div>
         )}
-        {filtered.map((s) => {
+        {!query && filtered.map((s) => {
           const active = s.id === currentId;
           const isEditing = editingId === s.id;
           return (
@@ -221,6 +259,23 @@ export function Sidebar({
             </div>
           );
         })}
+        {query && searchResults?.map((result, index) => (
+          <button
+            key={`${result.message_id ?? result.session_id}-${index}`}
+            type="button"
+            onClick={() => {
+              onOpenSearchResult(result);
+              setQuery("");
+            }}
+            className="w-full text-left rounded-md px-3 py-2.5 text-sm text-fg-secondary hover:bg-bg-panelAlt transition"
+          >
+            <div className="truncate text-fg-primary font-medium">{result.session_title || "新对话"}</div>
+            <div className="mt-0.5 line-clamp-2 text-xs leading-5 text-fg-muted">
+              {result.pane && `${result.pane === "main" ? "主栏" : "辅栏"} · `}
+              {result.snippet}
+            </div>
+          </button>
+        ))}
       </div>
 
       <div className="border-t border-border-subtle p-2">

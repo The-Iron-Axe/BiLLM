@@ -2,22 +2,36 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .database import init_db
 from .routers import chat, sessions, settings
-from .services.config_store import ensure_config_file
+from .services.config_store import ConfigStoreError, ensure_config_file
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_config_file()
     await init_db()
-    yield
+    try:
+        yield
+    finally:
+        await chat.shutdown_generations()
 
 
 app = FastAPI(title="billm", lifespan=lifespan)
+
+
+@app.exception_handler(ConfigStoreError)
+async def config_store_error_handler(
+    _request: Request, exc: ConfigStoreError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": f"配置文件无效：{exc}"},
+    )
 
 app.add_middleware(
     CORSMiddleware,

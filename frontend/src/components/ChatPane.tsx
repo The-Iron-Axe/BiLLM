@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "../hooks/useChat";
 import {
   sendShortcutHint,
@@ -6,8 +6,10 @@ import {
   type SendShortcut,
 } from "../prefs";
 import type { Pane } from "../types";
+import { loadContextOptions, saveContextOptions } from "../utils/contextPreferences";
 import { paneQuestionSummary } from "../utils/paneHeader";
 import { MessageBubble } from "./MessageBubble";
+import { ContextPanel } from "./ContextPanel";
 
 interface Props {
   sessionId: string | null;
@@ -30,6 +32,13 @@ interface Props {
   conversationRef?: React.Ref<HTMLDivElement>;
   textareaRef?: React.Ref<HTMLTextAreaElement>;
   sendShortcut?: SendShortcut;
+  focusMessageId?: string | null;
+  focusToken?: number;
+  onSendToOther?: (content: string) => void;
+  sendToOtherLabel?: string;
+  onBranch?: (messageId: string) => void;
+  onReady?: (pane: Pane, sessionId: string | null, send: ((content: string) => Promise<void>) | null) => void;
+  onBusyChange?: (pane: Pane, busy: boolean) => void;
 }
 
 export function ChatPane({
@@ -50,12 +59,25 @@ export function ChatPane({
   conversationRef,
   textareaRef,
   sendShortcut = "enter",
+  focusMessageId,
+  focusToken,
+  onSendToOther,
+  sendToOtherLabel,
+  onBranch,
+  onReady,
+  onBusyChange,
 }: Props) {
+  const [contextOptions, setContextOptions] = useState(() => loadContextOptions(sessionId, pane));
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextStorageError, setContextStorageError] = useState(false);
+  const [summaryBusy, setSummaryBusy] = useState(false);
   const {
     messages,
     stats,
     streaming,
+    stopping,
     error,
+    lastRun,
     send,
     regenerate,
     editAndResend,
@@ -65,7 +87,27 @@ export function ChatPane({
     sessionId,
     pane,
     onAfterSend,
+    contextOptions,
   });
+  useEffect(() => {
+    setContextStorageError(!saveContextOptions(sessionId, pane, contextOptions));
+  }, [sessionId, pane, contextOptions]);
+  useEffect(() => {
+    onReady?.(pane, sessionId, send);
+    return () => onReady?.(pane, sessionId, null);
+  }, [onReady, pane, sessionId, send]);
+  useEffect(() => {
+    onBusyChange?.(pane, streaming || summaryBusy);
+    return () => onBusyChange?.(pane, false);
+  }, [onBusyChange, pane, streaming, summaryBusy]);
+  const toggleContext = useCallback((id: string) => {
+    setContextOptions((previous) => ({
+      ...previous,
+      excluded_message_ids: previous.excluded_message_ids.includes(id)
+        ? previous.excluded_message_ids.filter((messageId) => messageId !== id)
+        : [...previous.excluded_message_ids, id],
+    }));
+  }, []);
   const [internalInput, setInternalInput] = useState("");
   const controlled = inputValue !== undefined && onInputChange !== undefined;
   const input = controlled ? (inputValue as string) : internalInput;
@@ -77,6 +119,9 @@ export function ChatPane({
   const pinnedRef = useRef(true);
   const [showJumpBtn, setShowJumpBtn] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
+  const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null);
+  const messageElsRef = useRef(new Map<string, HTMLDivElement>());
+  const handledFocusTokenRef = useRef<number | undefined>(undefined);
 
   const BOTTOM_THRESHOLD = 80;
 
@@ -119,9 +164,21 @@ export function ChatPane({
     if (pinnedRef.current) scrollToBottom();
   }, [messages]);
 
+  useEffect(() => {
+    if (!focusMessageId || focusToken === undefined) return;
+    if (handledFocusTokenRef.current === focusToken) return;
+    const el = messageElsRef.current.get(focusMessageId);
+    if (!el) return;
+    handledFocusTokenRef.current = focusToken;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFocusedMessageId(focusMessageId);
+    const timer = window.setTimeout(() => setFocusedMessageId(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [focusMessageId, focusToken, messages]);
+
   const submit = () => {
     const value = input.trim();
-    if (!value || streaming || !sessionId) return;
+    if (!value || streaming || summaryBusy || !sessionId) return;
     setInput("");
     pinnedRef.current = true;
     setShowJumpBtn(false);
@@ -161,6 +218,14 @@ export function ChatPane({
   }, [onRenameSession, sessionTitle, headerTitle]);
 
   const canRename = !!sessionId && !!onRenameSession;
+  const lastRoleIndices = useMemo(() => {
+    const indices = { user: -1, assistant: -1 };
+    messages.forEach((message, index) => {
+      if (!message.id.startsWith("local-")) indices[message.role] = index;
+    });
+    return indices;
+  }, [messages]);
+  const excludedIds = useMemo(() => new Set(contextOptions.excluded_message_ids), [contextOptions]);
 
   return (
     <section ref={sectionRef} className="flex-1 min-w-0 h-full flex flex-col bg-bg-base">
@@ -203,7 +268,7 @@ export function ChatPane({
           </div>
           <div
             className="mt-1 flex items-center gap-2 min-w-0 text-xs text-fg-muted font-mono"
-            title="本栏消息数、估算上下文 token 与当前模型"
+            title="本栏已保存消息数、存储文本 Token 估算（非 API 累计用量）与当前模型"
           >
             {stats && stats.message_count > 0 ? (
               <>
@@ -221,6 +286,10 @@ export function ChatPane({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          <button type="button" disabled={!sessionId || summaryBusy} onClick={() => setContextOpen((open) => !open)}
+            aria-expanded={contextOpen} className="text-xs rounded px-2 py-1 text-fg-muted hover:bg-bg-hover disabled:opacity-40">
+            上下文{excludedIds.size ? ` (${excludedIds.size})` : ""}
+          </button>
           {onSwap && (
             <IconButton onClick={onSwap} title="交换左右位置">
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -247,6 +316,18 @@ export function ChatPane({
         </div>
       </header>
 
+      {contextOpen && sessionId && <ContextPanel sessionId={sessionId} pane={pane}
+        options={contextOptions} onChange={setContextOptions} draft={input} busy={streaming}
+        messageCount={stats?.message_count ?? 0} onSummaryBusy={setSummaryBusy} />}
+      {contextStorageError && <p role="alert" className="text-xs text-red-500 px-5 py-1">浏览器存储不可用，上下文设置仅在本次打开期间有效。</p>}
+      {lastRun && <div className="px-5 py-1.5 border-b border-border-subtle text-xs text-fg-muted flex flex-wrap items-center gap-2">
+        <span>本次总耗时 {(lastRun.elapsed_ms / 1000).toFixed(1)} 秒</span>
+        <span>{lastRun.status === "failed" ? "生成失败" : lastRun.status === "stopped" ? "已停止" : "生成完成"}</span>
+        <span>{lastRun.saved ? "已保存" : "未确认保存"}</span>
+        {lastRun.input_tokens_estimate !== undefined && <span title="本次输入及输出文本的本地估算，非服务商账单">估算输入 {lastRun.input_tokens_estimate.toLocaleString()} / 输出 {(lastRun.output_tokens_estimate ?? 0).toLocaleString()} Token</span>}
+        {lastRun.branch_id && lastRun.status !== "saved" && <span>未完成回复保存在侧栏的新分支中</span>}
+      </div>}
+
       <div className="relative flex-1 min-h-0">
         <div
           ref={setListRef}
@@ -272,23 +353,37 @@ export function ChatPane({
           </div>
         )}
         {messages.map((m, i) => {
-          const isLastOfRole =
-            messages.findIndex(
-              (mm, idx) => idx > i && mm.role === m.role,
-            ) === -1;
+          const isLastOfRole = lastRoleIndices[m.role] === i;
           return (
-            <MessageBubble
+            <div
               key={m.id}
-              message={m}
-              streaming={
-                streaming && i === messages.length - 1 && m.role === "assistant"
+              ref={(el) => {
+                if (el) messageElsRef.current.set(m.id, el);
+                else messageElsRef.current.delete(m.id);
+              }}
+              className={
+                focusedMessageId === m.id
+                  ? "rounded-xl outline outline-2 outline-blue-500/70 outline-offset-4 transition"
+                  : "transition"
               }
-              isLast={isLastOfRole}
-              busy={streaming}
-              onRegenerate={regenerate}
-              onEdit={editAndResend}
-              onDelete={deleteMessage}
-            />
+            >
+              <MessageBubble
+                message={m}
+                streaming={
+                  streaming && i === messages.length - 1 && m.role === "assistant"
+                }
+                isLast={isLastOfRole}
+                busy={streaming || summaryBusy}
+                onRegenerate={regenerate}
+                onEdit={editAndResend}
+                onDelete={deleteMessage}
+                onSendToOther={m.role === "assistant" ? onSendToOther : undefined}
+                sendToOtherLabel={sendToOtherLabel}
+                onBranch={onBranch}
+                excludedFromContext={excludedIds.has(m.id)}
+                onToggleContext={toggleContext}
+              />
+            </div>
           );
         })}
         {error && (
@@ -326,15 +421,16 @@ export function ChatPane({
           />
           {streaming ? (
             <button
-              onClick={stop}
+              onClick={() => { void stop(); }}
+              disabled={stopping}
               className="text-sm px-3 py-1.5 rounded-md bg-bg-active text-fg-primary hover:opacity-90 transition"
             >
-              停止
+              {stopping ? "正在停止并保存…" : "停止"}
             </button>
           ) : (
             <button
               onClick={submit}
-              disabled={!input.trim() || !sessionId}
+              disabled={!input.trim() || !sessionId || summaryBusy}
               className="text-sm px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 transition"
             >
               发送

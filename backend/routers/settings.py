@@ -38,6 +38,10 @@ def _to_out(cfg) -> SettingsOut:
         api_key_set=bool(cfg.api_key),
         model_main=cfg.model_main,
         model_aux=cfg.model_aux,
+        system_prompt_main=cfg.system_prompt_main,
+        system_prompt_aux=cfg.system_prompt_aux,
+        max_output_tokens_main=cfg.max_output_tokens_main,
+        max_output_tokens_aux=cfg.max_output_tokens_aux,
         revision=cfg.revision,
     )
 

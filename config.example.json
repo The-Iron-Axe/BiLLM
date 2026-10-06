@@ -2,5 +2,9 @@
   "api_base_url": "https://api.openai.com/v1",
   "api_key": "",
   "model_main": "gpt-4o",
-  "model_aux": "gpt-4o-mini"
+  "model_aux": "gpt-4o-mini",
+  "system_prompt_main": "You are the primary assistant. The user uses this pane for their main, complex problem. Be thorough, structured, and detailed.",
+  "system_prompt_aux": "You are an auxiliary assistant in a side pane. The user asks shorter, off-topic or quick lookup questions here to avoid polluting the main conversation. Be concise and focused.",
+  "max_output_tokens_main": null,
+  "max_output_tokens_aux": null
 }

@@ -11,7 +11,7 @@ import {
   loadSendShortcut,
   type SendShortcut,
 } from "./prefs";
-import type { AppSettings, Pane } from "./types";
+import type { AppSettings, Pane, SearchResult } from "./types";
 
 type Visible = "both" | "main" | "aux";
 
@@ -133,11 +133,60 @@ export default function App() {
   );
   const [sendShortcut, setSendShortcut] = useState(initialPrefs.sendShortcut);
 
-  const [auxInput, setAuxInput] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, { main: string; aux: string }>>({});
+  const draftKey = currentId ?? "none";
+  const mainInput = drafts[draftKey]?.main ?? "";
+  const auxInput = drafts[draftKey]?.aux ?? "";
+  const setPaneInput = useCallback((pane: Pane, value: React.SetStateAction<string>) => {
+    setDrafts((previous) => {
+      const pair = previous[draftKey] ?? { main: "", aux: "" };
+      return { ...previous, [draftKey]: { ...pair,
+        [pane]: typeof value === "function" ? value(pair[pane]) : value,
+      } };
+    });
+  }, [draftKey]);
+  const setMainInput = useCallback((value: React.SetStateAction<string>) => setPaneInput("main", value), [setPaneInput]);
+  const setAuxInput = useCallback((value: React.SetStateAction<string>) => setPaneInput("aux", value), [setPaneInput]);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [comparePrompt, setComparePrompt] = useState("");
+  const [compareStarting, setCompareStarting] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [pendingComparison, setPendingComparison] = useState<{ sessionId: string; prompt: string } | null>(null);
+  const [paneBusy, setPaneBusy] = useState({ main: false, aux: false });
+  const [readyVersion, setReadyVersion] = useState(0);
+  const readyPanes = useRef<Partial<Record<Pane, { sessionId: string | null; send: (content: string) => Promise<void> }>>>({});
+  const onPaneReady = useCallback((pane: Pane, sessionId: string | null, send: ((content: string) => Promise<void>) | null) => {
+    if (send) readyPanes.current[pane] = { sessionId, send };
+    else delete readyPanes.current[pane];
+    setReadyVersion((version) => version + 1);
+  }, []);
+  const onPaneBusy = useCallback((pane: Pane, busy: boolean) => {
+    setPaneBusy((previous) => previous[pane] === busy ? previous : { ...previous, [pane]: busy });
+  }, []);
+  const anyPaneBusy = paneBusy.main || paneBusy.aux;
+  useEffect(() => {
+    if (!pendingComparison) return;
+    if (currentId !== pendingComparison.sessionId) {
+      setPendingComparison(null);
+      return;
+    }
+    const { main, aux } = readyPanes.current;
+    if (main?.sessionId !== currentId || aux?.sessionId !== currentId) return;
+    setPendingComparison(null);
+    // Each pane has its own request, stop control and error state.
+    void Promise.allSettled([main.send(pendingComparison.prompt), aux.send(pendingComparison.prompt)]);
+  }, [pendingComparison, currentId, readyVersion]);
   const [selectionInfo, setSelectionInfo] = useState<SelectionInfo | null>(null);
+  const [messageFocus, setMessageFocus] = useState<{
+    sessionId: string;
+    messageId: string;
+    pane: Pane;
+    token: number;
+  } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const mainConversationElRef = useRef<HTMLDivElement | null>(null);
+  const mainTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const auxTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -209,8 +258,27 @@ export default function App() {
     rename(id, title).catch((e) => alert(`重命名失败: ${e}`));
   };
 
-  const afterSend = () => {
+  const afterSend = useCallback(() => {
     refresh().catch(() => {});
+  }, [refresh]);
+
+  const startComparison = async () => {
+    const prompt = comparePrompt.trim();
+    if (!prompt || compareStarting || anyPaneBusy) return;
+    setCompareStarting(true);
+    setCompareError(null);
+    try {
+      const session = await create(`同题对比 · ${prompt.replace(/\n/g, " ").slice(0, 24)}`);
+      setVisible("both");
+      setCurrentId(session.id);
+      setPendingComparison({ sessionId: session.id, prompt });
+      setCompareOpen(false);
+      setComparePrompt("");
+    } catch (e) {
+      setCompareError(String(e));
+    } finally {
+      setCompareStarting(false);
+    }
   };
 
   const pushToAux = useCallback(
@@ -230,7 +298,55 @@ export default function App() {
         }
       });
     },
-    [autoCopyClearAux],
+    [autoCopyClearAux, setAuxInput],
+  );
+
+  const transferToOtherPane = useCallback(
+    (source: Pane, content: string) => {
+      const target: Pane = source === "main" ? "aux" : "main";
+      const quote = content
+        .trim()
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+      if (!quote) return;
+      setVisible((current) => (current === "both" ? current : "both"));
+      const next = `引用自${source === "main" ? "主助手" : "辅助助手"}：\n\n${quote}`;
+      const setTargetInput = target === "main" ? setMainInput : setAuxInput;
+      setTargetInput((previous) => (previous.trim() ? `${previous}\n\n${next}` : next));
+      requestAnimationFrame(() => {
+        const textarea = target === "main" ? mainTextareaRef.current : auxTextareaRef.current;
+        textarea?.focus();
+      });
+    },
+    [setMainInput, setAuxInput],
+  );
+
+  const openSearchResult = useCallback((result: SearchResult) => {
+    setCurrentId(result.session_id);
+    if (result.message_id && result.pane) {
+      setVisible("both");
+      setMessageFocus({
+        sessionId: result.session_id,
+        messageId: result.message_id,
+        pane: result.pane,
+        token: Date.now(),
+      });
+    }
+  }, []);
+
+  const branchFromMessage = useCallback(
+    async (messageId: string) => {
+      if (!currentId) return;
+      try {
+        const branch = await api.branchSession(currentId, messageId);
+        await refresh();
+        setCurrentId(branch.id);
+      } catch (e) {
+        alert(`创建分支失败: ${e}`);
+      }
+    },
+    [currentId, refresh],
   );
 
   useEffect(() => {
@@ -319,7 +435,7 @@ export default function App() {
     const currentSession = sessions.find((s) => s.id === currentId);
     return (
       <ChatPane
-        key={p}
+        key={`${currentId ?? "none"}:${p}`}
         sessionId={currentId}
         pane={p}
         fallbackTitle={PANE_META[p]}
@@ -333,15 +449,30 @@ export default function App() {
           (p === "main" ? settings?.model_main : settings?.model_aux) ?? "—"
         }
         onAfterSend={afterSend}
-        onSwap={both ? swap : undefined}
-        onClose={both ? () => closePane(p) : undefined}
+        onSwap={both && !anyPaneBusy ? swap : undefined}
+        onClose={both && !anyPaneBusy ? () => closePane(p) : undefined}
         onShowOther={!both ? showBoth : undefined}
         otherLabel={PANE_META[p === "main" ? "aux" : "main"]}
         conversationRef={p === "main" ? mainConversationElRef : undefined}
-        textareaRef={p === "aux" ? auxTextareaRef : undefined}
-        inputValue={p === "aux" ? auxInput : undefined}
-        onInputChange={p === "aux" ? setAuxInput : undefined}
+        textareaRef={p === "main" ? mainTextareaRef : auxTextareaRef}
+        inputValue={p === "main" ? mainInput : auxInput}
+        onInputChange={p === "main" ? setMainInput : setAuxInput}
         sendShortcut={sendShortcut}
+        focusMessageId={
+          messageFocus?.sessionId === currentId && messageFocus.pane === p
+            ? messageFocus.messageId
+            : undefined
+        }
+        focusToken={
+          messageFocus?.sessionId === currentId && messageFocus.pane === p
+            ? messageFocus.token
+            : undefined
+        }
+        onSendToOther={(content) => transferToOtherPane(p, content)}
+        sendToOtherLabel={`引用到${PANE_META[p === "main" ? "aux" : "main"]}`}
+        onBranch={branchFromMessage}
+        onReady={onPaneReady}
+        onBusyChange={onPaneBusy}
       />
     );
   };
@@ -369,9 +500,6 @@ export default function App() {
     setRatio(0.5);
   };
 
-  const leftPane: Pane = swapped ? "aux" : "main";
-  const rightPane: Pane = swapped ? "main" : "aux";
-
   const leftFlex = ratio;
   const rightFlex = 1 - ratio;
 
@@ -388,6 +516,7 @@ export default function App() {
         onCreate={handleCreate}
         onDelete={handleDelete}
         onRename={handleRename}
+        onOpenSearchResult={openSearchResult}
         onOpenSettings={() => setSettingsOpen(true)}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
@@ -397,19 +526,28 @@ export default function App() {
         locked={layoutLocked}
       />
 
-      <main ref={containerRef} className="flex-1 min-w-0 flex relative">
-        {visible === "both" && (
-          <>
+      <main className="flex-1 min-w-0 flex flex-col">
+        <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 border-b border-border-subtle bg-bg-panel">
+          <span className="text-xs text-fg-muted truncate">双栏独立上下文</span>
+          <button type="button" disabled={anyPaneBusy || compareStarting || !!pendingComparison}
+            onClick={() => { setCompareError(null); setCompareOpen(true); }}
+            className="text-xs px-3 py-1.5 rounded-md border border-border-subtle hover:bg-bg-hover disabled:opacity-40">
+            同题对比
+          </button>
+        </div>
+        <div ref={containerRef} className="flex-1 min-h-0 min-w-0 flex relative">
             <div
               className="flex min-w-0 overflow-hidden"
-              style={{ flex: `${leftFlex} 1 0` }}
+              style={{ display: visible === "aux" ? "none" : "flex", order: swapped ? 2 : 0,
+                flex: visible === "both" ? `${swapped ? rightFlex : leftFlex} 1 0` : "1 1 0" }}
             >
-              {renderPane(leftPane)}
+              {renderPane("main")}
             </div>
             <div
               role="separator"
               aria-orientation="vertical"
               aria-disabled={layoutLocked || undefined}
+              style={{ display: visible === "both" ? undefined : "none", order: 1 }}
               title={
                 layoutLocked
                   ? "布局已锁定（在设置里关闭锁定后可拖拽）"
@@ -436,20 +574,39 @@ export default function App() {
             </div>
             <div
               className="flex min-w-0 overflow-hidden"
-              style={{ flex: `${rightFlex} 1 0` }}
+              style={{ display: visible === "main" ? "none" : "flex", order: swapped ? 0 : 2,
+                flex: visible === "both" ? `${swapped ? leftFlex : rightFlex} 1 0` : "1 1 0" }}
             >
-              {renderPane(rightPane)}
+              {renderPane("aux")}
             </div>
-          </>
-        )}
-
-        {visible === "main" && (
-          <div className="flex-1 min-w-0 flex">{renderPane("main")}</div>
-        )}
-        {visible === "aux" && (
-          <div className="flex-1 min-w-0 flex">{renderPane("aux")}</div>
-        )}
+        </div>
       </main>
+
+      {compareOpen && <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+        onClick={() => { if (!compareStarting) setCompareOpen(false); }}>
+        <form role="dialog" aria-modal="true" aria-labelledby="compare-title"
+          onClick={(event) => event.stopPropagation()}
+          onSubmit={(event) => { event.preventDefault(); void startComparison(); }}
+          onKeyDown={(event) => { if (event.key === "Escape" && !compareStarting) setCompareOpen(false); }}
+          className="w-full max-w-xl rounded-xl bg-bg-base border border-border-subtle p-5 space-y-4 shadow-xl">
+          <h2 id="compare-title" className="font-medium">同一问题，同时发送给两个助手</h2>
+          <p className="text-sm text-fg-muted">会新建独立会话，两栏都从空历史开始，不影响当前聊天。各使用当前设置中的模型、系统提示词与输出上限。</p>
+          <div className="text-xs text-fg-secondary break-words">主栏：{settings?.model_main ?? "未配置"}　/　辅栏：{settings?.model_aux ?? "未配置"}</div>
+          <textarea autoFocus rows={5} value={comparePrompt} maxLength={1_000_000} disabled={compareStarting}
+            onChange={(event) => setComparePrompt(event.target.value)}
+            placeholder="输入用于对比的问题"
+            className="w-full rounded-lg bg-bg-panel border border-border-subtle p-3 outline-none focus:border-blue-500 text-sm resize-y" />
+          {compareError && <p role="alert" className="text-sm text-red-500 break-words">{compareError}</p>}
+          <div className="flex justify-end gap-2">
+            <button type="button" disabled={compareStarting} onClick={() => setCompareOpen(false)} className="text-sm px-3 py-2 rounded hover:bg-bg-hover">取消</button>
+            <button type="submit" disabled={!comparePrompt.trim() || compareStarting || anyPaneBusy || !settings?.api_key_set}
+              className="text-sm px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-40">
+              {compareStarting ? "正在准备…" : "新建会话并对比"}
+            </button>
+          </div>
+          {!settings?.api_key_set && <p className="text-xs text-red-500">请先在设置中配置 API Key。</p>}
+        </form>
+      </div>}
 
       {selectionInfo && !autoCopyToAux && (
         <SelectionCopyButton
@@ -469,6 +626,8 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         onSettingsSaved={loadSettings}
         onClearAllSessions={clearAll}
+        onSessionsChanged={refresh}
+        currentSessionId={currentId}
         externalRevision={settings?.revision}
         theme={theme}
         onChangeTheme={setTheme}
